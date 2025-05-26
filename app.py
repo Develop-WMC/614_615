@@ -417,7 +417,6 @@ def process_pdf(uploaded_file, progress_bar, status_text):
                 clean=True,  # 清理未使用的對象
                 deflate=True,  # 使用deflate壓縮
                 pretty=False,  # 不使用美化格式（減少文件大小）
-                linear=True,  # 線性化PDF以便於Web瀏覽
             )
             
             output_doc.close()
