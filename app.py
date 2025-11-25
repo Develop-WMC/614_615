@@ -83,7 +83,7 @@ def extract_code_by_rule(page):
 def call_gemini_ai(image, api_key):
     """调用 AI，但只看 Header"""
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash') # 使用 Flash 模型，速度更快
+    model = genai.GenerativeModel('gemini-2.5-flash') # 使用 Flash 模型，速度更快
     
     prompt = """
     Look at this document HEADER.
@@ -339,3 +339,4 @@ if st.session_state.processing_complete and st.session_state.generated_files:
                 mime="application/pdf",
                 key=f"btn_{f['filename']}"
             )
+
