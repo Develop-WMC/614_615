@@ -15,7 +15,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 # 配置与初始化
 # -------------------------------------------------
 
-# 尝试从后台 Secrets 获取 Key，不在 UI 上显示
 try:
     GEMINI_API_KEY = st.secrets["gemini"]["api_key"]
     HAS_API_KEY = True
@@ -35,7 +34,7 @@ if 'zip_data' not in st.session_state:
 # -------------------------------------------------
 
 def get_header_image(page):
-    """截取页面顶部，用于 AI 分析"""
+    """截取页面顶部"""
     rect = page.rect
     clip_rect = fitz.Rect(0, 0, rect.width, rect.height * 0.25)
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip_rect)
@@ -43,27 +42,28 @@ def get_header_image(page):
     return Image.open(io.BytesIO(img_data))
 
 def extract_code_by_rule(page):
-    """规则提取：极速模式"""
+    """规则提取：极速模式 (已修复 CUT 误判)"""
     try:
-        # 扫描左上角 300x150 区域
+        # 扫描左上角
         target_rect = fitz.Rect(0, 0, 300, 150) 
         text_in_box = page.get_text("text", clip=target_rect)
         
         clean_text = text_in_box.upper().replace('\n', ' ').strip()
         
-        # 黑名单：排除非机构代码的词
+        # --- 核心修复：黑名单升级 ---
+        # 这里的词绝对不会被当做机构代码
         BLACKLIST = [
             'THE', 'AND', 'RPT', 'ALL', 'USD', 'PDF', 'DAT', 'TIM', 'PAG', 'REC',
             'OUT', 'STA', 'FEE', 'REP', 'GRA', 'TOT', 'END', 'SUM', 'UNK', 'WHK',
-            'ACC', 'NO.', 'NUM', 'BER', 'COU', 'UNT', 'IPP' # IPP如果是机构代码则保留，如果是干扰词则加入
+            'ACC', 'NO.', 'NUM', 'BER', 'COU', 'UNT',
+            'CUT', 'OFF', 'TRA', 'ACT', 'ION', 'DATE' # 新增：屏蔽 Transaction Cut-Off Date
         ]
-        # 注意：如果 IPP 是正规机构代码，请从上面黑名单移除。根据你截图，IPP是正确的机构代码。
         
         matches = re.findall(r'\b[A-Z]{3}\b', clean_text)
-        # 过滤黑名单
         valid_codes = [m for m in matches if m not in BLACKLIST]
         
         if len(valid_codes) > 0:
+            # 优先返回第一个非黑名单代码
             return valid_codes[0]
         return None
     except Exception:
@@ -78,19 +78,27 @@ def call_gemini_ai(image, api_key):
     Analyze this document header.
     Find the 3-letter Agency Code (e.g., APO, FPL, OFS, IPP, WMG).
     It is usually in a box or at the top left.
-    IGNORE: "Outstanding", "Report", "WHK" (if account number), "Fee".
+    
+    STRICTLY IGNORE: 
+    - "Outstanding"
+    - "Report"
+    - "WHK" (Account No)
+    - "Fee"
+    - "Cut-Off" (Date)
+    - "Transaction"
+    
     Return JSON: {"code": "XXX"}
     """
     response = model.generate_content([prompt, image])
     return response.text
 
 def extract_code_hybrid(page, api_key, page_num):
-    # 1. 规则优先 (0.01秒)
+    # 1. 规则优先
     rule_code = extract_code_by_rule(page)
     if rule_code:
         return rule_code
     
-    # 2. AI 兜底 (仅当规则失败且配置了Key时)
+    # 2. AI 兜底
     if not api_key:
         return "UNKNOWN"
         
@@ -101,7 +109,8 @@ def extract_code_hybrid(page, api_key, page_num):
         data = json.loads(clean_json)
         ai_code = data.get('code', 'UNKNOWN')
         
-        if ai_code in ['OUT', 'REP', 'FEE', 'WHK', 'UNK']:
+        # AI 结果二次过滤 (防止 AI 也读到 CUT)
+        if ai_code in ['OUT', 'REP', 'FEE', 'WHK', 'UNK', 'CUT', 'OFF']:
             return "UNKNOWN"
         return ai_code
     except Exception:
@@ -137,7 +146,6 @@ def process_pdf(uploaded_file, progress_bar, status_text):
             progress_bar.progress((i + 1) / total_pages)
             status_text.text(f"正在分析第 {i+1}/{total_pages} 页...")
             
-            # 摘要页处理
             if "End of Report" in page_text or "Grand Total" in page_text:
                 if current_group:
                     page_groups.append({'code': last_code, 'pages': current_group, 'text': doc[current_group[0]].get_text()})
@@ -145,16 +153,14 @@ def process_pdf(uploaded_file, progress_bar, status_text):
                     last_code = None
                 continue
 
-            # 提取代码
             code = extract_code_hybrid(page, GEMINI_API_KEY, i)
             
-            # 逻辑修正：沿用上一页代码
+            # 逻辑修正
             if code == "UNKNOWN" and last_code:
                 code = last_code
             if code == "UNKNOWN" and last_code is None:
                 code = "Unclassified"
 
-            # 分组
             if code != last_code:
                 if current_group:
                     page_groups.append({'code': last_code, 'pages': current_group, 'text': doc[current_group[0]].get_text()})
@@ -225,7 +231,6 @@ def process_pdf(uploaded_file, progress_bar, status_text):
 
 st.set_page_config(page_title="PDF 报表拆分系统", layout="wide")
 
-# 自定义 CSS 隐藏 Streamlit 默认菜单，让界面更干净
 st.markdown("""
 <style>
     #MainMenu {visibility: hidden;}
@@ -241,19 +246,18 @@ st.markdown("""
 st.title("📊 PDF 报表自动拆分系统")
 st.markdown("上传包含多个机构的 PDF 报表，系统将自动识别机构代码并拆分为独立文件。")
 
-# 侧边栏仅显示状态，不显示输入框
 with st.sidebar:
     st.header("系统状态")
     if HAS_API_KEY:
-        st.success("✅ AI 引擎已就绪 (后台托管)")
+        st.success("✅ AI 引擎已就绪")
     else:
-        st.info("ℹ️ 运行在极速规则模式 (无 AI Key)")
+        st.info("ℹ️ 极速规则模式")
     
     st.divider()
     st.markdown("**使用说明**")
-    st.markdown("1. 直接拖拽 PDF 文件上传")
+    st.markdown("1. 拖拽 PDF 上传")
     st.markdown("2. 点击开始拆分")
-    st.markdown("3. 下载 ZIP 包或单独文件")
+    st.markdown("3. 下载结果")
 
 uploaded_file = st.file_uploader("📂 上传 PDF 文件", type="pdf")
 
@@ -270,11 +274,9 @@ if uploaded_file:
         if not files:
             st.error("未生成文件，请检查 PDF 内容。")
 
-# 结果展示
 if st.session_state.processing_complete and st.session_state.generated_files:
     st.divider()
     
-    # 顶部操作栏
     c1, c2 = st.columns([3, 1])
     with c1:
         st.subheader(f"🎉 拆分结果 ({len(st.session_state.generated_files)} 个文件)")
@@ -291,10 +293,8 @@ if st.session_state.processing_complete and st.session_state.generated_files:
     
     st.write("")
 
-    # 文件列表
     for i, f in enumerate(st.session_state.generated_files):
         with st.container():
-            # 布局：信息(6) | 预览(2) | 下载(2)
             col_info, col_prev, col_dl = st.columns([6, 2, 2])
             
             with col_info:
@@ -303,11 +303,9 @@ if st.session_state.processing_complete and st.session_state.generated_files:
                 else:
                     st.markdown(f"### 📄 {f['filename']}")
                 
-                # 使用 Tag 样式显示元数据
                 st.caption(f"🏷️ 机构: **{f['code']}**  |  📑 页数: **{f['page_count']}**  |  📍 范围: p{f['page_range']}")
             
             with col_prev:
-                # 预览逻辑
                 if st.button("👁️ 预览", key=f"p_{i}"):
                     try:
                         with fitz.open(stream=f['content'], filetype="pdf") as doc:
