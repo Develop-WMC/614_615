@@ -72,7 +72,7 @@ def extract_code_by_rule(page):
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
 def call_gemini_ai(image, api_key):
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     
     prompt = """
     Analyze this document header.
@@ -323,3 +323,4 @@ if st.session_state.processing_complete and st.session_state.generated_files:
                     use_container_width=True
                 )
             st.divider()
+
